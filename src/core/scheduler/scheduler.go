@@ -17,6 +17,7 @@ const (
 	StatusRunning          = "running"
 	StatusSuccess          = "success"
 	StatusFailed           = "failed"
+	StatusCancelled        = "cancelled"
 )
 
 var ErrJobAlreadyScheduled = errors.New("scheduler: an active job already exists for this target")
@@ -92,6 +93,23 @@ func (s *Scheduler) GetJob(id int64) (*Job, error) {
 	return scanJob(row)
 }
 
+// ActiveJobForTarget returns the earliest active (non-terminal) job for
+// target, or nil if none exists.
+func (s *Scheduler) ActiveJobForTarget(target string) (*Job, error) {
+	row := s.db.QueryRow(
+		`SELECT id, target, version, scheduled_at, status, created_at, updated_at FROM jobs WHERE target = ? AND status IN (?, ?, ?) ORDER BY scheduled_at ASC LIMIT 1`,
+		target, StatusScheduled, StatusWaitingCondition, StatusRunning,
+	)
+	job, err := scanJob(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
 func (s *Scheduler) ListActiveJobs() ([]*Job, error) {
 	rows, err := s.db.Query(
 		`SELECT id, target, version, scheduled_at, status, created_at, updated_at FROM jobs WHERE status IN (?, ?, ?) ORDER BY scheduled_at ASC`,
@@ -148,6 +166,13 @@ func (s *Scheduler) Reschedule(id int64, newTime time.Time) error {
 		newTime.Unix(), time.Now().Unix(), id,
 	)
 	return err
+}
+
+// CancelJob marks a job as cancelled (e.g. replaced by a newer version via
+// the "Übernehmen" flow). Cancelled jobs are terminal and no longer count
+// as active.
+func (s *Scheduler) CancelJob(id int64) error {
+	return s.UpdateStatus(id, StatusCancelled)
 }
 
 // DueJobs returns active jobs whose scheduled time has arrived.
